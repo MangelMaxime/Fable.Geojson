@@ -3,8 +3,13 @@ const chalk = require("chalk").default;
 const fs = require('fs');
 const path = require('path');
 const shell = require('shelljs');
-const release = require('release-it');
+const parseChangelog = require('changelog-parser');
+const git = require('simple-git/promise')().outputHandler((command, stdout, stderr) => {
+    stdout.pipe(process.stdout);
+    stderr.pipe(process.stderr);
+ });
 const log = console.log;
+const request = require('request-promise-native');
 
 class Dotnet {
     static exec(args, options) {
@@ -166,7 +171,22 @@ class Runner {
     }
 }
 
+const getLastVersion = async () => {
+    const versionRegx = /^## ?\[?v?([\w\d.-]+\.[\w\d.-]+[a-zA-Z0-9])\]?/gm;
+
+    const fileContent = fs.readFileSync(path.join(__dirname, "CHANGELOG.md")).toString();
+
+    const m = versionRegx.exec(fileContent);
+
+    if (m === null)
+        throw "No valid version found in the CHANGELOG";
+
+    return m[1];
+}
+
 const projectName = "Fable.Geojson";
+const owner = "MangelMaxime";
+const repo = "Fable.Geojson";
 
 const clean =
     new Task("Clean", async () => {
@@ -209,9 +229,9 @@ const publishToNuget =
         const projectFile = path.join(__dirname, "src", `${projectName}.fsproj`);
         const versionInProjectFileRegex = /(<(Version|PackageVersion)>)([\w\d.-]+)(<\/(Version|PackageVersion)>)/gm;
         const updatedContent =
-        fs.readFileSync(projectFile)
-            .toString()
-            .replace(versionInProjectFileRegex, `$1${version}$4`);
+            fs.readFileSync(projectFile)
+                .toString()
+                .replace(versionInProjectFileRegex, `$1${version}$4`);
 
         fs.writeFileSync(projectFile, updatedContent);
 
@@ -227,13 +247,68 @@ const publishToNuget =
 
 const releaseToGithub =
     new Task("Release", async () => {
-        release.
+        const lastVersion = await getLastVersion();
+        const changelog = await parseChangelog({
+            filePath: path.join(__dirname, "CHANGELOG.md")
+        });
+        const versionInfo =
+            changelog.versions.find((version) => {
+                return (version.version === lastVersion)
+            });
+
+        if (versionInfo === null)
+            throw `Unable to find the version info for ${lastVersion}`;
+
+        const isPreRelease = /.*(alpha|beta|rc).*/.test(lastVersion);
+
+        const status = await git.status();
+
+        if (!status.isClean()) {
+            await git.add(status.files.map((file) => file.path));
+
+            log(chalk.cyan(`Changes found in the repo. We are including them in the commit`));
+            await git.commit(`Release version ${lastVersion}`);
+        }
+
+        await git.push();
+
+        if (process.env.GITHUB_TOKEN === undefined)
+            throw "The Github token must be set in a GITHUB_TOKEN environmental variable"
+
+
+        const httpOptions = {
+            url: `https://api.github.com/repos/${owner}/${repo}/releases`,
+            method: "POST",
+            headers: {
+                'User-Agent': 'Build.js script',
+                Authorization: ` token ${process.env.GITHUB_TOKEN}`
+            },
+            json: true,
+            body: {
+                tag_name: versionInfo.version,
+                target_commitish: status.current,
+                name: versionInfo.title,
+                body: versionInfo.body,
+                draft: false,
+                prerelease: isPreRelease
+            }
+        };
+
+        try {
+            const res = await request(httpOptions);
+            log(chalk.green(`Github released created`));
+            log(chalk.green(`URL: ${res.url}`));
+        } catch (err) {
+            log(chalk.red(`An error occured while release on Github`));
+            throw err
+        }
     });
 
 new Runner([
-    clean,
-    restore,
-    build,
-    pack,
-    publishToNuget
+    // clean,
+    // restore,
+    // build,
+    // pack,
+    // publishToNuget,
+    releaseToGithub
 ]).run()
