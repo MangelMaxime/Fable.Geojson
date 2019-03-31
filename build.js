@@ -297,7 +297,7 @@ const releaseToGithub =
         try {
             const res = await request(httpOptions);
             log(chalk.green(`Github released created`));
-            log(chalk.green(`URL: ${res.url}`));
+            log(chalk.green(`URL: ${res.html_url}`));
         } catch (err) {
             log(chalk.red(`An error occured while release on Github`));
             throw err
@@ -305,10 +305,10 @@ const releaseToGithub =
     });
 
 new Runner([
-    // clean,
-    // restore,
-    // build,
-    // pack,
-    // publishToNuget,
+    clean,
+    restore,
+    build,
+    pack,
+    publishToNuget,
     releaseToGithub
 ]).run()
